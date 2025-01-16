@@ -1,1 +1,171 @@
-DRIVER DROWSINESS DETECTION CODE
+import cv2
+import mediapipe as mp
+import numpy as np
+from scipy.spatial import distance as dist
+import pygame
+import time  # For timestamp functionality
+
+# Initialize pygame mixer for sound playback
+pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)  # Pygame pre-init
+pygame.mixer.init()
+pygame.mixer.music.set_volume(0.8)
+
+# Load sound files
+YAWN_SOUND = 'C:/Users/ranja/OneDrive/Desktop/YAWN_SOUND.mp3'
+BEEP_SOUND = 'C:/Users/ranja/OneDrive/Desktop/BEEP_SOUND.mp3'
+
+# Function to calculate Eye Aspect Ratio (EAR)
+def calculate_ear(eye):
+    A = dist.euclidean(eye[1], eye[5])  # Vertical distance
+    B = dist.euclidean(eye[2], eye[4])  # Vertical distance
+    C = dist.euclidean(eye[0], eye[3])  # Horizontal distance
+    ear = (A + B) / (2.0 * C)
+    return ear
+
+# Function to calculate distance between upper and lower lips
+def calculate_lip_distance(upper_lip, lower_lip):
+    return dist.euclidean(upper_lip, lower_lip)
+
+# Constants
+EAR_THRESHOLD = 0.25  # Threshold for eye closure (Eye Aspect Ratio)
+LIP_THRESHOLD = 20  # Threshold for lip opening distance
+CONSECUTIVE_FRAMES = 20  # Number of consecutive frames for detection
+
+# Initialize variables
+frame_counter = 0
+yawning_frames = 0
+drowsy_alert = False
+yawning_alert = False
+last_drowsiness_time = None  # Timestamp for last drowsiness detection
+last_yawning_time = None  # Timestamp for last yawning detection
+
+# Mediapipe Solutions
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
+mp_drawing = mp.solutions.drawing_utils
+
+# Eye and lip landmark indices for Mediapipe
+LEFT_EYE = [362, 385, 387, 263, 373, 380]
+RIGHT_EYE = [33, 160, 158, 133, 153, 144]
+UPPER_LIP = [13]  # Upper lip center
+LOWER_LIP = [14]  # Lower lip center
+
+# Start Video Capture
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit()
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Convert frame to RGB
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results_face = face_mesh.process(rgb_frame)
+
+    if results_face.multi_face_landmarks:
+        for face_landmarks in results_face.multi_face_landmarks:
+            # Extract eye and lip landmarks
+            height, width, _ = frame.shape
+            landmarks = np.array(
+                [(int(landmark.x * width), int(landmark.y * height)) 
+                 for landmark in face_landmarks.landmark]
+            )
+            left_eye = landmarks[LEFT_EYE]
+            right_eye = landmarks[RIGHT_EYE]
+            upper_lip = landmarks[UPPER_LIP[0]]
+            lower_lip = landmarks[LOWER_LIP[0]]
+
+            # Calculate EAR for both eyes
+            left_ear = calculate_ear(left_eye)
+            right_ear = calculate_ear(right_eye)
+            avg_ear = (left_ear + right_ear) / 2.0
+
+            
+            # Calculate the lip distance
+            lip_distance = calculate_lip_distance(upper_lip, lower_lip)
+
+            # Check for yawning
+            if avg_ear < EAR_THRESHOLD and lip_distance > LIP_THRESHOLD:
+                yawning_frames += 1
+                if yawning_frames >= CONSECUTIVE_FRAMES:
+                    yawning_alert = True
+                    last_yawning_time = time.time()  # Record timestamp
+                    message = "Yawning Detected!"
+                    cv2.putText(frame, message, (width - 250, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2,
+                                cv2.LINE_AA)
+
+                    # Highlight eyes
+                    for point in left_eye:
+                        cv2.circle(frame, tuple(point), 2, (255, 255, 0), -1)
+                    for point in right_eye:
+                        cv2.circle(frame, tuple(point), 2, (255, 255, 0), -1)
+
+                    # Play yawning sound
+                    if not pygame.mixer.music.get_busy():
+                        pygame.mixer.music.load(YAWN_SOUND)
+                        pygame.mixer.music.play()
+
+            # Detect drowsiness
+            elif avg_ear < EAR_THRESHOLD:
+                frame_counter += 1
+                if frame_counter >= CONSECUTIVE_FRAMES:
+                    drowsy_alert = True
+                    last_drowsiness_time = time.time()  # Record timestamp
+                    message = "Drowsiness Detected!"
+                    cv2.putText(frame, message, (width - 250, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2,
+                                cv2.LINE_AA)
+
+                    # Highlight eyes
+                    for point in left_eye:
+                        cv2.circle(frame, tuple(point), 2, (0, 0, 255), -1)
+                    for point in right_eye:
+                        cv2.circle(frame, tuple(point), 2, (0, 0, 255), -1)
+
+                    # Play drowsiness sound
+                    if not pygame.mixer.music.get_busy():
+                        pygame.mixer.music.load(BEEP_SOUND)
+                        pygame.mixer.music.play()
+
+            else:
+                yawning_frames = 0
+                frame_counter = 0
+                drowsy_alert = False
+                yawning_alert = False
+                cv2.putText(frame, "Active", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2,
+                            cv2.LINE_AA)
+                last_active_time = time.time()  # Update last active time
+
+                # Display last detection times
+                if last_drowsiness_time:
+                    elapsed_time = int(time.time() - last_drowsiness_time)
+                    if elapsed_time < 60:
+                        message = "Last drowsiness: Few seconds ago"
+                    else:
+                        message = f"Last drowsiness: {elapsed_time // 60} mins ago"
+                    cv2.putText(frame, message, (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6, (0, 255, 0), 2, cv2.LINE_AA)
+
+                if last_yawning_time:
+                    elapsed_time = int(time.time() - last_yawning_time)
+                    if elapsed_time < 60:
+                        message = "Last yawning: Few seconds ago"
+                    else:
+                        message = f"Last yawning: {elapsed_time // 60} mins ago"
+                    cv2.putText(frame, message, (10, 90), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6, (0, 255, 0), 2, cv2.LINE_AA)
+
+    # Display the frame
+    cv2.imshow("Driver Drowsiness and Yawning Detection", frame)
+
+    # Break loop on 'q' key
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
